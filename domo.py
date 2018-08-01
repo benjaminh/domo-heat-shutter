@@ -10,20 +10,37 @@ import threading
 #from RPi.GPIO import GPIO
 from RPiSim.GPIO import GPIO
 
+DUREE_OUVERTURE_VOLET = 30
+DUREE_FERMETURE_VOLET = 30
+DUREE_ENCLENCHEMENT_CHAUFFAGE_MANUEL = 3600 #1h
+DUREE_ENCLENCHEMENT_CHAUFFAGE_AUTO = 7200 #2h
+HORAIRE_ENCLENCHEMENT_CHAUFFAGE_SEMAINE_ZONE_1 = "05:30"
+HORAIRE_ENCLENCHEMENT_CHAUFFAGE_WE_ZONE_1 = "07:30"
+HORAIRE_ENCLENCHEMENT_CHAUFFAGE_SEMAINE_ZONE_2_MATIN = "05:30"
+HORAIRE_ENCLENCHEMENT_CHAUFFAGE_SEMAINE_ZONE_2_SOIR = "19:00"
+HORAIRE_ENCLENCHEMENT_CHAUFFAGE_WE_ZONE_2 = "07:30"
+HORAIRE_OUVERTURE_ROUTINE_VOLET = "11:00"
+HORAIRE_FERMETURE_ROUTINE_VOLET = "19:00"
+BROCHE_GPIO_CHAUFFAGE_ZONE_1 = 4
+BROCHE_GPIO_CHAUFFAGE_ZONE_2 = 5
+BROCHE_GPIO_OUVERTURE_VOLET = 6
+BROCHE_GPIO_FERMETURE_VOLET = 7
 
 def listen_keyboard(stop_event):
     def on_press(key):
         if key == keyboard.Key.f1:
             try:
                 logging.info("Enclenchement manuel chauffage zone 1")
-                GPIO.output(4,GPIO.HIGH)
+                heating_thread = threading.Thread(target=chauffage_manuel, args=(1,))
+                heating_thread.start()
             except:
                 logging.error("Erreur de communication avec GPIO ?")
 
         if key == keyboard.Key.f2:
             try:
                 logging.info("Enclenchement manuel chauffage zone 2")
-                GPIO.output(5,GPIO.HIGH)
+                heating_thread = threading.Thread(target=chauffage_manuel, args=(2,))
+                heating_thread.start()
             except:
                 logging.error("Erreur de communication avec GPIO ?")
 
@@ -36,43 +53,30 @@ def listen_keyboard(stop_event):
             logging.info("Arrêt du programme pour la routine volet")
             stop_event.set()
 
-    def on_release(key):
-        if key == keyboard.Key.f1:
-            # Délai avant d'arrêter le chauffage
-            time.sleep(5)
-            logging.info("Arrêt procédure manuelle chauffage zone 1")
-            GPIO.output(4,GPIO.LOW)
-        if key == keyboard.Key.f2:
-            # Délai avant d'arrêter le chauffage
-            time.sleep(5)
-            logging.info("Arrêt procédure manuelle chauffage zone 2")
-            GPIO.output(5,GPIO.LOW)
-
-    with keyboard.Listener(on_press=on_press,on_release=on_release) as listener:
+    with keyboard.Listener(on_press=on_press) as listener:
         listener.join()
 
 def routine_volet(stop_event):
     def ouverture():
         logging.info("Ouverture volet")
-        GPIO.output(6,GPIO.HIGH)
-        #time.sleep(30) # durée d'ouverture
-        time.sleep(5) # pour les tests
-        GPIO.output(6,GPIO.LOW)
+        GPIO.output(BROCHE_GPIO_OUVERTURE_VOLET,GPIO.HIGH)
+        time.sleep(DUREE_OUVERTURE_VOLET) # durée d'ouverture
+        GPIO.output(BROCHE_GPIO_OUVERTURE_VOLET,GPIO.LOW)
         return
     def fermeture():
         logging.info("Fermeture volet")
-        GPIO.output(7,GPIO.HIGH)
+        GPIO.output(BROCHE_GPIO_FERMETURE_VOLET,GPIO.HIGH)
         #time.sleep(30) # durée d'ouverture
-        time.sleep(5) # pour les tests
-        GPIO.output(7,GPIO.LOW)
+        time.sleep(DUREE_FERMETURE_VOLET) # pour les tests
+        GPIO.output(BROCHE_GPIO_FERMETURE_VOLET,GPIO.LOW)
         return
 
     my_sched = schedule.Scheduler()
     # Ouvrir le volet tous les jours à 11h
-    #my_sched.every().day.at("11:00").do(ouverture)
+    my_sched.every().day.at(HORAIRE_OUVERTURE_ROUTINE_VOLET).do(ouverture).tag('routine-volet-ouverture')
     # Fermer le volet tous les jours à 19h
-    #my_sched.every().day.at("19:00").do(fermeture)
-    my_sched.every(10).seconds.do(ouverture)
+    my_sched.every().day.at(HORAIRE_FERMETURE_ROUTINE_VOLET).do(fermeture).tag('routine-volet-fermeture')
+    #my_sched.every(10).seconds.do(ouverture)
 
     while True:
         if not stop_event.is_set():
@@ -83,26 +87,50 @@ def routine_volet(stop_event):
             return
 
 def routine_chauffage():
-    def job():
-        logging.info("Enclenchement chauffage zones 1 et 2 pour 1h")
-        GPIO.output(4,GPIO.HIGH)
-        GPIO.output(5,GPIO.HIGH)
-        # Durée de la procédure en secondes : 7200 (2h)
-        # Pour les tests 5 sec
-        time.sleep(100)
-        GPIO.output(4,GPIO.LOW)
-        GPIO.output(5,GPIO.LOW)
-        return
+    def chauffage_auto(zone):
+        # Vérifier jour de la semaine
+        today = datetime.datetime.today()
+        weekday = today.weekday() #0 (lundi) à 6 (dimanche)
+        hour = today.hour
+        if ( (weekday in range(4) and hour in [5,19]) or (weekday in [5,6] and hour == 7) ):
+            logging.info("Enclenchement chauffage zone %s pour 2h", zone)
+            if zone == 1:
+                broche = BROCHE_GPIO_CHAUFFAGE_ZONE_1
+            else:
+                broche = BROCHE_GPIO_CHAUFFAGE_ZONE_2
+            GPIO.output(broche,GPIO.HIGH)
+            # Durée de la procédure en secondes : 7200 (2h)
+            time.sleep(DUREE_ENCLENCHEMENT_CHAUFFAGE_AUTO)
+            GPIO.output(broche,GPIO.LOW)
+            return
+        else:
+            return
 
     #TODO : deux routines différentes → semaine/week-end
     my_sched = schedule.Scheduler()
-    my_sched.every(500).seconds.do(job)
+    #Pour les tests
+    #my_sched.every(10).seconds.do(job)
     #Enclencher le chauffage tous les jours à 5h30
-    #my_sched.every().day.at("05:30").do(job)
+    schedule.every().day.at(HORAIRE_ENCLENCHEMENT_CHAUFFAGE_SEMAINE_ZONE_1).do(chauffage_auto, 1)
+    schedule.every().day.at(HORAIRE_ENCLENCHEMENT_CHAUFFAGE_SEMAINE_ZONE_2_MATIN).do(chauffage_auto, 2)
+    schedule.every().day.at(HORAIRE_ENCLENCHEMENT_CHAUFFAGE_SEMAINE_ZONE_2_SOIR).do(chauffage_auto, 2)
+    schedule.every().day.at(HORAIRE_ENCLENCHEMENT_CHAUFFAGE_WE_ZONE_1).do(chauffage_auto, 1)
+    schedule.every().day.at(HORAIRE_ENCLENCHEMENT_CHAUFFAGE_WE_ZONE_2).do(chauffage_auto, 2)
 
     while True:
         my_sched.run_pending()
         time.sleep(1)
+
+def chauffage_manuel(zone):
+    if zone == 1:
+        broche = BROCHE_GPIO_CHAUFFAGE_ZONE_1
+    else:
+        broche = BROCHE_GPIO_CHAUFFAGE_ZONE_2
+    GPIO.output(broche,GPIO.HIGH)
+    time.sleep(DUREE_ENCLENCHEMENT_CHAUFFAGE_MANUEL)
+    GPIO.output(broche,GPIO.LOW)
+    return
+
 
 if __name__ == "__main__":
 
@@ -130,10 +158,10 @@ if __name__ == "__main__":
 
     GPIO.setmode(GPIO.BCM)
     GPIO.setwarnings(False)
-    GPIO.setup(4, GPIO.OUT, initial = GPIO.LOW)
-    GPIO.setup(5, GPIO.OUT, initial = GPIO.LOW)
-    GPIO.setup(6, GPIO.OUT, initial = GPIO.LOW)
-    GPIO.setup(7, GPIO.OUT, initial = GPIO.LOW)
+    GPIO.setup(BROCHE_GPIO_CHAUFFAGE_ZONE_1, GPIO.OUT, initial = GPIO.LOW) # Chauffage zone 1
+    GPIO.setup(BROCHE_GPIO_CHAUFFAGE_ZONE_2, GPIO.OUT, initial = GPIO.LOW) # Chauffage zone 2
+    GPIO.setup(BROCHE_GPIO_OUVERTURE_VOLET, GPIO.OUT, initial = GPIO.LOW) # Ouverture volet
+    GPIO.setup(BROCHE_GPIO_FERMETURE_VOLET, GPIO.OUT, initial = GPIO.LOW) # Fermeture volet
 
     stop_event = threading.Event()
     heating_thread = threading.Thread(target=routine_chauffage, name="heating")
