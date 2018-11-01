@@ -6,9 +6,10 @@ import schedule
 import time
 import datetime
 import logging
+from logging.handlers import RotatingFileHandler
 import threading
-#from RPi.GPIO import GPIO
-from RPiSim.GPIO import GPIO
+import RPi.GPIO as GPIO
+#from RPiSim.GPIO import GPIO
 
 DUREE_OUVERTURE_VOLET = 30
 DUREE_FERMETURE_VOLET = 30
@@ -18,14 +19,22 @@ HORAIRE_ENCLENCHEMENT_CHAUFFAGE_SEMAINE_ZONE_1 = "05:30"
 HORAIRE_ENCLENCHEMENT_CHAUFFAGE_WE_ZONE_1 = "07:30"
 HORAIRE_ENCLENCHEMENT_CHAUFFAGE_SEMAINE_ZONE_2_MATIN = "05:30"
 HORAIRE_ENCLENCHEMENT_CHAUFFAGE_SEMAINE_ZONE_2_SOIR = "19:00"
-HORAIRE_ENCLENCHEMENT_CHAUFFAGE_WE_ZONE_2 = "07:30"
+HORAIRE_ENCLENCHEMENT_CHAUFFAGE_WE_ZONE_2_MATIN = "07:30"
+HORAIRE_ENCLENCHEMENT_CHAUFFAGE_WE_ZONE_2_SOIR = "19:00"
 HORAIRE_OUVERTURE_ROUTINE_VOLET = "11:00"
 HORAIRE_FERMETURE_ROUTINE_VOLET = "19:00"
-BROCHE_GPIO_CHAUFFAGE_ZONE_1 = 4
-BROCHE_GPIO_CHAUFFAGE_ZONE_2 = 5
-BROCHE_GPIO_OUVERTURE_VOLET = 6
-BROCHE_GPIO_FERMETURE_VOLET = 7
+BROCHE_GPIO_CHAUFFAGE_ZONE_1 = 22
+BROCHE_GPIO_CHAUFFAGE_ZONE_2 = 23
+BROCHE_GPIO_OUVERTURE_VOLET = 24
+BROCHE_GPIO_FERMETURE_VOLET = 25
 
+
+'''
+- F1 : enclenchement chauffage manuel zone 1
+- F2 : enclenchement chauffage manuel zone 2
+- F4 : enclenchement routine volet
+- F5 : arrêt routine volet
+'''
 def listen_keyboard(stop_event):
     def on_press(key):
         if key == keyboard.Key.f1:
@@ -76,8 +85,10 @@ def routine_volet(stop_event):
     my_sched.every().day.at(HORAIRE_OUVERTURE_ROUTINE_VOLET).do(ouverture).tag('routine-volet-ouverture')
     # Fermer le volet tous les jours à 19h
     my_sched.every().day.at(HORAIRE_FERMETURE_ROUTINE_VOLET).do(fermeture).tag('routine-volet-fermeture')
-    #my_sched.every(10).seconds.do(ouverture)
 
+    # tests
+    # my_sched.every(10).seconds.do(ouverture).tag('routine-volet-ouverture')
+    # my_sched.every(15).seconds.do(fermeture).tag('routine-volet-fermeture')
     while True:
         if not stop_event.is_set():
             my_sched.run_pending()
@@ -87,12 +98,14 @@ def routine_volet(stop_event):
             return
 
 def routine_chauffage():
+    def wait(wait_time,GPIO_nb):
+        threading.Timer(wait_time,lambda:GPIO.output(GPIO_nb,GPIO.LOW)).start() 
     def chauffage_auto(zone):
         # Vérifier jour de la semaine
         today = datetime.datetime.today()
         weekday = today.weekday() #0 (lundi) à 6 (dimanche)
         hour = today.hour
-        if ( (weekday in range(4) and hour in [5,19]) or (weekday in [5,6] and hour == 7) ):
+        if ( (weekday in range(5) and hour in [5,19]) or (weekday in [5,6] and hour in [7,19]) ):
             logging.info("Enclenchement chauffage zone %s pour 2h", zone)
             if zone == 1:
                 broche = BROCHE_GPIO_CHAUFFAGE_ZONE_1
@@ -100,8 +113,7 @@ def routine_chauffage():
                 broche = BROCHE_GPIO_CHAUFFAGE_ZONE_2
             GPIO.output(broche,GPIO.HIGH)
             # Durée de la procédure en secondes : 7200 (2h)
-            time.sleep(DUREE_ENCLENCHEMENT_CHAUFFAGE_AUTO)
-            GPIO.output(broche,GPIO.LOW)
+            wait(DUREE_ENCLENCHEMENT_CHAUFFAGE_AUTO,broche)
             return
         else:
             return
@@ -111,11 +123,12 @@ def routine_chauffage():
     #Pour les tests
     #my_sched.every(10).seconds.do(job)
     #Enclencher le chauffage tous les jours à 5h30
-    schedule.every().day.at(HORAIRE_ENCLENCHEMENT_CHAUFFAGE_SEMAINE_ZONE_1).do(chauffage_auto, 1)
-    schedule.every().day.at(HORAIRE_ENCLENCHEMENT_CHAUFFAGE_SEMAINE_ZONE_2_MATIN).do(chauffage_auto, 2)
-    schedule.every().day.at(HORAIRE_ENCLENCHEMENT_CHAUFFAGE_SEMAINE_ZONE_2_SOIR).do(chauffage_auto, 2)
-    schedule.every().day.at(HORAIRE_ENCLENCHEMENT_CHAUFFAGE_WE_ZONE_1).do(chauffage_auto, 1)
-    schedule.every().day.at(HORAIRE_ENCLENCHEMENT_CHAUFFAGE_WE_ZONE_2).do(chauffage_auto, 2)
+    my_sched.every().day.at(HORAIRE_ENCLENCHEMENT_CHAUFFAGE_SEMAINE_ZONE_1).do(chauffage_auto, 1)
+    my_sched.every().day.at(HORAIRE_ENCLENCHEMENT_CHAUFFAGE_SEMAINE_ZONE_2_MATIN).do(chauffage_auto, 2)
+    my_sched.every().day.at(HORAIRE_ENCLENCHEMENT_CHAUFFAGE_SEMAINE_ZONE_2_SOIR).do(chauffage_auto, 2)
+    my_sched.every().day.at(HORAIRE_ENCLENCHEMENT_CHAUFFAGE_WE_ZONE_1).do(chauffage_auto, 1)
+    my_sched.every().day.at(HORAIRE_ENCLENCHEMENT_CHAUFFAGE_WE_ZONE_2_MATIN).do(chauffage_auto, 2)
+    my_sched.every().day.at(HORAIRE_ENCLENCHEMENT_CHAUFFAGE_WE_ZONE_2_SOIR).do(chauffage_auto, 2)
 
     while True:
         my_sched.run_pending()
@@ -134,26 +147,33 @@ def chauffage_manuel(zone):
 
 if __name__ == "__main__":
 
-    logging.basicConfig(format='%(asctime)s - %(levelname)s: %(message)s', level=logging.INFO)
+    logger = logging.getLogger()
+    logger.setLevel(logging.INFO)
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s: %(message)s')
+    file_handler = RotatingFileHandler('journal.log', 'a', 100000000, 1)
+    file_handler.setLevel(logging.INFO)
+    file_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
+    #logging.basicConfig(format='%(asctime)s - %(levelname)s: %(message)s', level=logging.INFO)
 
     '''
     # Zone 1
     Type : Salon
-    Broche GPIO : 4
+    Broche GPIO : 22
     Horaires chauffage :
     - Semaine : 5h30-7h30
     - Week-end : 7h30-9h30
 
     # Zone 2
     Type : Salle de bains
-    Broche GPIO : 5
+    Broche GPIO : 23
     Horaires chauffage :
     - Semaine : 5h30-7h30 puis 19h00-21h00
     - Week-end : 7h30-9h30
 
     # Routine volet
-    - ouverture : 11h00 / Broche GPIO : 6
-    - fermeture : 19h00 / Broche GPIO : 7
+    - ouverture : 11h00 / Broche GPIO : 24
+    - fermeture : 19h00 / Broche GPIO : 25
     '''
 
     GPIO.setmode(GPIO.BCM)
